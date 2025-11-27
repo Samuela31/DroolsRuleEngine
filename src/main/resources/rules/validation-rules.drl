@@ -1,0 +1,60 @@
+/*
+package rules;
+import com.example.validationengine.dto.Person;
+
+rule Hello1
+  when
+    $p : Person(age > 20 || age < 10)
+  then
+    System.out.println("Hello, " + $p.getName());
+end
+*/
+
+
+package rules;
+
+
+
+dialect "mvel"
+
+
+rule "Scheme Eligibility Validation"
+when
+    $order : Order($invId : investorId, $schemeCode : schemeCode)
+    $inv : Investor(investorId == $invId, (!kycCompleted || !fatcaCompleted))
+    $res : ValidationResult()
+then
+    $res.addError("Investor is not eligible: KYC or FATCA not completed");
+end
+
+
+rule "Cut-Off Time Validation"
+when
+    $order : Order($time : orderTime, $schemeCode : schemeCode)
+    $scheme : Scheme(schemeCode == $schemeCode, $cutOff : cutOffTime)
+    $res : ValidationResult()
+    eval($time.toLocalTime().isAfter($scheme.getCutOffTime()))
+then
+    $res.addError("Order received after cut-off time: will apply next-day NAV");
+end
+
+
+rule "Transaction Type Validation"
+when
+    $order : Order($type : transactionType, $schemeCode : schemeCode)
+    $scheme : Scheme(schemeCode == $schemeCode, !allowedTxnTypes.contains($type))
+    $res : ValidationResult()
+then
+    $res.addError("Transaction type '" + $type + "' is not allowed for this scheme");
+end
+
+
+rule "Minimum Amount/Unit Validation"
+when
+    $order : Order($amount : amount, $units : units, $schemeCode : schemeCode)
+    $scheme : Scheme(schemeCode == $schemeCode,
+                     ($amount < minAmount) || ($units < minUnits))
+    $res : ValidationResult()
+then
+    $res.addError("Order does not meet minimum amount/units requirement");
+end
