@@ -1,6 +1,8 @@
 package com.example.validationengine.service;
 
 
+import com.example.validationengine.dto.ClientDTO;
+import com.example.validationengine.dto.FundDTO;
 import com.example.validationengine.dto.ValidationResult;
 import com.example.validationengine.entity.Fund;
 import com.example.validationengine.entity.OutboxEntity;
@@ -29,6 +31,10 @@ import java.util.UUID;
 
 @Service
 public class ValidationService {
+
+    @Autowired
+    private RuleEngineService ruleEngineService;
+
     @Autowired
     private OutboxRepository outboxRepository;
 
@@ -59,33 +65,60 @@ public class ValidationService {
 
 
 
-    public ValidationResult validate(CanonicalTrade ct) {
-        KieSession kieSession = null;
-        try {
-            kieSession = kieContainer.newKieSession();
-            ValidationResult result = new ValidationResult();
+    public ValidationResult validate(CanonicalTrade data) {
+    KieSession kieSession = null;
+    try {
+        kieSession = kieContainer.newKieSession();
+        ValidationResult result = new ValidationResult();
 
-            // insert the CanonicalTrade fact (used by DRL now)
-            kieSession.insert(ct);
-            kieSession.insert(result);
+        // Insert the incoming trade and result
+        kieSession.insert(data);
+        kieSession.insert(result);
 
-            kieSession.setGlobal("navCutoffTime", LocalTime.parse(navCutoffTime));
-            kieSession.setGlobal("minimumInvestmentAmount", minimumInvestmentAmount);
-            kieSession.setGlobal("requestId", UUID.randomUUID().toString());
+        // Set required globals
+        kieSession.setGlobal("ruleEngineService", ruleEngineService);
+        kieSession.setGlobal("navCutoffTime", LocalTime.parse(navCutoffTime)); // replace with pre-parsed LocalTime if you have one
+        kieSession.setGlobal("minimumInvestmentAmount", minimumInvestmentAmount);
+        kieSession.setGlobal("requestId", UUID.randomUUID().toString());
 
-            setFundAndClientGlobals(kieSession); 
-
-            kieSession.fireAllRules();
-            return result;
-        } finally {
-            if (kieSession != null) kieSession.dispose();
+        // --- Insert FundDTOs as facts ---
+        List<Fund> funds = fundRepository.findAll();
+        for (Fund f : funds) {
+            com.example.validationengine.dto.FundDTO fundDto = new com.example.validationengine.dto.FundDTO();
+            fundDto.setFundId(f.getFundId());
+            fundDto.setSchemeCode(f.getSchemeCode());
+            fundDto.setStatus(f.getStatus());
+            // type is BigDecimal in DTO (you said you changed it)
+            fundDto.setMinLimit(f.getMinLimit());
+            fundDto.setMaxLimit(f.getMaxLimit());
+            kieSession.insert(fundDto);
         }
+
+        // --- Insert ClientDTOs as facts ---
+        List<Client> clients = clientRepository.findAll();
+        for (Client c : clients) {
+            com.example.validationengine.dto.ClientDTO clientDto = new com.example.validationengine.dto.ClientDTO();
+            clientDto.setClientId(c.getClientId());
+            clientDto.setKycStatus(c.getKycStatus());
+            clientDto.setPanNumber(c.getPanNumber());
+            clientDto.setStatus(c.getStatus());
+            clientDto.setType(c.getType());
+            kieSession.insert(clientDto);
+        }
+
+        // Fire rules
+        kieSession.fireAllRules();
+        return result;
+    } finally {
+        if (kieSession != null) kieSession.dispose();
     }
+    }
+
+
     
     @Transactional
     public void storeValidOrders(CanonicalTrade trade) {
 
-        // Persist trade (id will be generated)
         CanonicalTrade saved = canonicalTradeRepository.save(trade);
 
         // Convert saved trade to JSON for outbox payload
@@ -97,10 +130,8 @@ public class ValidationService {
         }
 
         OutboxEntity outbox = new OutboxEntity();
-        // If OutboxEntity.aggregateId is UUID:
-        outbox.setAggregateId(saved.getId());
-        // If it's a string: outbox.setAggregateId(saved.getId().toString());
 
+        outbox.setAggregateId(saved.getId());
         outbox.setPayload(payloadJson);
         outbox.setStatus("ARRIVED");
         outbox.setCreatedAt(LocalDateTime.now());
@@ -110,34 +141,32 @@ public class ValidationService {
         outboxRepository.save(outbox);
     }
 
-    private void setFundAndClientGlobals(KieSession kieSession) {
-        // load all funds
-        List<Fund> funds = fundRepository.findAll();
-        Map<Integer, Map<String, Object>> fundData = new HashMap<>(funds.size());
-        for (Fund f : funds) {
-            Map<String, Object> fm = new HashMap<>();
-            fm.put("scheme_code", f.getSchemeCode());
-            fm.put("status", f.getStatus());
-            // store numeric values as Number so DRL can cast
-            fm.put("max_limit", f.getMaxLimit() != null ? f.getMaxLimit() : null);
-            fm.put("min_limit", f.getMinLimit() != null ? f.getMinLimit() : null);
-            fundData.put(f.getFundId(), fm);
-        }
+    // private void setFundAndClientGlobals(KieSession kieSession) {
+    //     // load all funds
+    //     List<Fund> funds = fundRepository.findAll();
+    //     Map<Integer, Map<String, Object>> fundData = new HashMap<>(funds.size());
+    //     for (Fund f : funds) {
+    //         Map<String, Object> fm = new HashMap<>();
+    //         fm.put("scheme_code", f.getSchemeCode());
+    //         fm.put("status", f.getStatus());
+    //         // store numeric values as Number so DRL can cast
+    //         fm.put("max_limit", f.getMaxLimit() != null ? f.getMaxLimit() : null);
+    //         fm.put("min_limit", f.getMinLimit() != null ? f.getMinLimit() : null);
+    //         fundData.put(f.getFundId(), fm);
+    //     }
 
-        // load all clients
-        List<Client> clients = clientRepository.findAll();
-        Map<Integer, Map<String, Object>> clientData = new HashMap<>(clients.size());
-        for (Client c : clients) {
-            Map<String, Object> cm = new HashMap<>();
-            cm.put("kyc_status", c.getKycStatus());
-            cm.put("pan_number", c.getPanNumber());
-            cm.put("status", c.getStatus());
-            cm.put("type", c.getType());
-            clientData.put(c.getClientId(), cm);
-        }
+    //     List<Client> clients = clientRepository.findAll();
+    //     Map<Integer, Map<String, Object>> clientData = new HashMap<>(clients.size());
+    //     for (Client c : clients) {
+    //         Map<String, Object> cm = new HashMap<>();
+    //         cm.put("kyc_status", c.getKycStatus());
+    //         cm.put("pan_number", c.getPanNumber());
+    //         cm.put("status", c.getStatus());
+    //         cm.put("type", c.getType());
+    //         clientData.put(c.getClientId(), cm);
+    //     }
 
-        // set as globals on KIE session
-        kieSession.setGlobal("fundData", fundData);
-        kieSession.setGlobal("clientData", clientData);
-    }
+    //     kieSession.setGlobal("fundData", fundData);
+    //     kieSession.setGlobal("clientData", clientData);
+    // }
 }
